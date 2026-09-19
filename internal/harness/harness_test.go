@@ -18,11 +18,17 @@ import (
 func scratch(t *testing.T) (home, agent string) {
 	t.Helper()
 	home, agent = filepath.Join(t.TempDir(), "plst"), filepath.Join(t.TempDir(), "agent")
+	cfg := filepath.Join(home, "config.json")
 	t.Setenv(plst.EnvHome, home)
-	t.Setenv("CLAUDE_CONFIG_DIR", agent)
+	t.Setenv(plst.EnvConfig, cfg)
 	if err := os.MkdirAll(agent, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	b, err := json.Marshal(plst.Config{ClaudeDir: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, cfg, string(b))
 	return home, agent
 }
 
@@ -420,8 +426,137 @@ func TestScopesAreTrackedSeparately(t *testing.T) {
 		t.Errorf("project scope has %q", a.Harness)
 	}
 	// User scope is reported first: it is the one that applies everywhere.
-	if order := state.Order(); len(order) != 2 || order[0] != User {
+	if order := state.Order(); len(order) != 2 || order[0] != User.Resolve() {
 		t.Errorf("order = %v", order)
+	}
+}
+
+// switchTo points plst at another agent directory the way `plst harness dir` does.
+func switchTo(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := claude.SetDir(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func isLink(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
+}
+
+// The reason state is kept per directory. Switching to another one and applying a
+// harness there must not take the first one's harness out from under it: that is
+// how someone ends up with a directory that quietly lost its configuration.
+func TestEachAgentDirectoryKeepsItsOwnHarness(t *testing.T) {
+	_, a := scratch(t)
+	b := filepath.Join(t.TempDir(), "other")
+	makeHarness(t, "one", "", "CLAUDE.md")
+	makeHarness(t, "two", "", "CLAUDE.md")
+
+	if _, err := Use("one", User, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	switchTo(t, b)
+	if _, ok := LoadState().Active(User); ok {
+		t.Fatal("the new directory reports a harness it was never given")
+	}
+	rep, err := Use("two", User, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Replaced != "" {
+		t.Errorf("applying in a second directory replaced %q", rep.Replaced)
+	}
+	if got, _ := rep.Scope.IsUser(); got != b {
+		t.Errorf("report names %q, want the directory it acted on, %q", got, b)
+	}
+
+	if !isLink(filepath.Join(a, "CLAUDE.md")) {
+		t.Error("the first directory lost its harness when another was applied")
+	}
+	state := LoadState()
+	if h, _ := state.Active(UserScope(a)); h.Harness != "one" {
+		t.Errorf("first directory has %q", h.Harness)
+	}
+	if h, _ := state.Active(UserScope(b)); h.Harness != "two" {
+		t.Errorf("second directory has %q", h.Harness)
+	}
+
+	// Off acts on the directory in use and nothing else.
+	if _, err := Off(User, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if isLink(filepath.Join(b, "CLAUDE.md")) {
+		t.Error("off left the harness in the directory it was run for")
+	}
+	if !isLink(filepath.Join(a, "CLAUDE.md")) {
+		t.Error("off reached into a directory that was not in use")
+	}
+	switchTo(t, a)
+	if _, err := Off(User, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if isLink(filepath.Join(a, "CLAUDE.md")) {
+		t.Error("the first directory's harness was not removed once it was in use again")
+	}
+}
+
+// An `off` in a directory with nothing applied has to say where the harness went,
+// or it reads as though it was lost.
+func TestOffSaysWhereTheHarnessIs(t *testing.T) {
+	_, a := scratch(t)
+	makeHarness(t, "one", "", "CLAUDE.md")
+	if _, err := Use("one", User, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	switchTo(t, filepath.Join(t.TempDir(), "other"))
+
+	_, err := Off(User, func(string) {})
+	if err == nil {
+		t.Fatal("off succeeded in a directory with nothing applied")
+	}
+	if !strings.Contains(err.Error(), "one is applied at "+a) {
+		t.Errorf("error does not say where it is: %v", err)
+	}
+}
+
+// State written before user scope was kept per directory sits under a bare
+// "user" key. It belongs to the directory it was applied to, and dropping it
+// would leave links that nothing knows how to remove.
+func TestLegacyUserStateIsMigratedToItsDirectory(t *testing.T) {
+	_, a := scratch(t)
+	makeHarness(t, "one", "", "CLAUDE.md")
+	if _, err := Use("one", User, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(statePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Replace(string(b), `"`+string(UserScope(a))+`"`, `"user"`, 1)
+	if legacy == string(b) {
+		t.Fatal("did not find the scope key to make legacy")
+	}
+	writeFile(t, statePath(), legacy)
+	switchTo(t, filepath.Join(t.TempDir(), "other"))
+
+	state := LoadState()
+	if h, ok := state.Active(UserScope(a)); !ok || h.Harness != "one" {
+		t.Fatalf("legacy state was not moved to %s: %+v", a, state.Scopes)
+	}
+	if _, ok := state.Scopes[User]; ok {
+		t.Error("the bare user key is still there")
+	}
+	// And it can still be taken out, from the directory it belongs to.
+	switchTo(t, a)
+	if _, err := Off(User, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if isLink(filepath.Join(a, "CLAUDE.md")) {
+		t.Error("the migrated harness was not removed")
 	}
 }
 

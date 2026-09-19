@@ -26,6 +26,7 @@ plst harness use rails                       # link it in
 plst harness use rails --project             # for this repository only
 plst harness off                             # put back what it displaced
 plst harness list
+plst harness dir ~/.claude-work             # which agent directory; switch to another
 
 plst harness pin esmarkowski/my-harness@v1   # record what this repository expects
 plst harness sync                            # install it, move to the ref, apply
@@ -191,3 +192,38 @@ normally the whole way you work. `--project` acts on a repository's `.claude`,
 found by walking up to the repository root, so it lands there rather than in
 whichever subdirectory you typed the command in. The two are tracked
 independently, so one project can run a different harness from everything else.
+
+### Which agent directory
+
+`~/.claude` unless plst's config says otherwise. Switching is one command, and the
+current one is never a guess:
+
+```sh
+plst harness dir                 # which one is in use, why, and what it holds
+plst harness dir ~/.claude-work  # switch (stored as claude_dir in plst's config)
+plst harness dir --reset         # back to ~/.claude
+plst harness dir --path          # just the path, for scripts
+```
+
+`dir` also lists every other directory that has a harness applied. `list` opens
+with the directory in use, and `use` and `off` name the directory they acted on,
+so a forgotten switch shows up on the next command instead of three weeks later.
+
+**Each directory keeps its own harness.** Applying one in `~/.claude-work` does not
+touch what `~/.claude` has, and `off` only ever acts on the directory `dir` shows.
+`off` in a directory with nothing applied says where the harness is.
+
+Switching moves where *plst* applies things. It cannot move the agent, which reads
+`~/.claude` unless it is started with `CLAUDE_CONFIG_DIR`. Keep the two together by
+letting plst say where:
+
+```sh
+alias claude='CLAUDE_CONFIG_DIR=$(plst harness dir --path) command claude'
+```
+
+`CLAUDE_CONFIG_DIR` itself is not read. If it is set in the shell to somewhere other
+than the directory plst is using, `dir`, `list` and `use` say so.
+
+The setting can also be edited by hand: `{ "claude_dir": "~/.claude-work" }` in
+`~/.plasticity/config.json` (`plst where` prints the path). `~` is your home
+directory, and a relative path is relative to plst's home.

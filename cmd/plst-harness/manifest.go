@@ -33,6 +33,7 @@ func manifest() int {
 			{"new", "scaffold a harness"},
 			{"use", "link a harness into place"},
 			{"off", "take a harness out"},
+			{"dir", "show or switch the agent directory"},
 			{"show", "what a harness contains"},
 			{"update", "pull a harness"},
 			{"remove", "delete a harness"},

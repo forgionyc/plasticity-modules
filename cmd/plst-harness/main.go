@@ -27,8 +27,16 @@ const usage = `plst harness — interchangeable sets of agent configuration
   plst harness pin <owner>/<repo>[@ref]  record the harness this repository expects
   plst harness sync                      install, move to the pinned ref, apply
 
+  plst harness dir                       which agent directory is in use, and what it holds
+  plst harness dir <path>                switch to another one
+  plst harness dir --reset               back to the default, ~/.claude
+  plst harness dir --path                just the path: CLAUDE_CONFIG_DIR=$(plst harness dir --path) claude
+
   --project   act on this repository's .claude instead of the agent's own.
               Rules only work here: the agent never reads them from user scope.
+
+Each agent directory keeps its own harness: switching with dir leaves the one you
+left exactly as it was, and use and off only ever touch the directory shown by dir.
 
 A pin lives in plst.json and is committed, so every clone and every worktree of a
 repository gets the same harness at the same ref. Syncing is safe to run twice.
@@ -57,6 +65,8 @@ func main() {
 		os.Exit(update(args))
 	case "remove", "uninstall":
 		os.Exit(remove(args))
+	case "dir":
+		os.Exit(agentDir(args))
 	case "pin":
 		os.Exit(pin(args))
 	case "sync":

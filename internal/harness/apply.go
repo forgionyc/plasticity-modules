@@ -35,6 +35,7 @@ func Use(name string, scope Scope, say func(string)) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	scope = scope.Resolve()
 	target, settings, err := scopePaths(scope)
 	if err != nil {
 		return Report{}, err
@@ -159,10 +160,11 @@ func Use(name string, scope Scope, say func(string)) (Report, error) {
 
 // Off takes a harness out of a scope and puts back whatever it displaced.
 func Off(scope Scope, say func(string)) (Report, error) {
+	scope = scope.Resolve()
 	state := LoadState()
 	prev, ok := state.Active(scope)
 	if !ok {
-		return Report{}, fmt.Errorf("no harness is applied at %s", scope.Label())
+		return Report{}, fmt.Errorf("no harness is applied at %s%s", scope.Label(), state.elsewhere(scope))
 	}
 	say("removing " + prev.Harness)
 	if err := revert(&state, scope, prev); err != nil {
@@ -341,5 +343,6 @@ func scopePaths(scope Scope) (target, settings string, err error) {
 		}
 		return claude.ProjectDir(abs), claude.ProjectSettingsPath(abs), nil
 	}
-	return claude.Dir(), claude.SettingsPath(), nil
+	dir, _ := scope.Resolve().IsUser()
+	return dir, claude.SettingsIn(dir), nil
 }

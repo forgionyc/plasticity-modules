@@ -55,13 +55,23 @@ func list(args []string) int {
 	}
 	state := harness.LoadState()
 
+	// Which directory everything below acts on comes first, since it is what a
+	// person forgets between one command and the next.
+	printDir()
+	warnEnv()
+	fmt.Println()
+
 	// What is applied leads, because it is the question being asked.
 	if scopes := state.Order(); len(scopes) > 0 {
+		here := harness.User.Resolve()
 		fmt.Println(ui.Note.Render("APPLIED"))
 		for _, sc := range scopes {
 			a, _ := state.Active(sc)
-			fmt.Printf("  %s%s\n", ui.Pad(ui.Name.Render(a.Harness), 22),
-				ui.Desc.Render(sc.Label()))
+			line := fmt.Sprintf("  %s%s", ui.Pad(ui.Name.Render(a.Harness), 22), ui.Desc.Render(scopeLabel(sc)))
+			if sc == here {
+				line += ui.Good.Render("  ← current")
+			}
+			fmt.Println(line)
 		}
 		fmt.Println()
 	}
@@ -165,13 +175,13 @@ func use(args []string) int {
 	if rep.Replaced != "" {
 		say("replaced " + rep.Replaced)
 	}
-	ui.Done(os.Stdout, fmt.Sprintf("%s applied at %s", rep.Harness, scope.Label()))
+	ui.Done(os.Stdout, fmt.Sprintf("%s applied at %s", rep.Harness, scopeLabel(rep.Scope)))
 	if len(rep.Linked) > 0 {
 		fmt.Println("  " + ui.Desc.Render("linked   ") + strings.Join(rep.Linked, ", "))
 	}
 	if len(rep.Hooks) > 0 {
 		fmt.Println("  " + ui.Desc.Render("hooks    ") +
-			fmt.Sprintf("%d registered in %s", len(rep.Hooks), shortPath(settingsFor(scope))))
+			fmt.Sprintf("%d registered in %s", len(rep.Hooks), shortPath(settingsFor(rep.Scope))))
 	}
 	if len(rep.Parked) > 0 {
 		fmt.Println("  " + ui.Warn.Render("moved    ") + strings.Join(rep.Parked, ", ") +
@@ -182,6 +192,9 @@ func use(args []string) int {
 			ui.Desc.Render(" — the agent only reads this from a project; use --project in a repo"))
 	}
 	fmt.Println(ui.Note.Render("  takes effect in sessions started from here on"))
+	if _, ok := rep.Scope.IsUser(); ok {
+		warnEnv()
+	}
 	return 0
 }
 
@@ -196,7 +209,7 @@ func off(args []string) int {
 		ui.Fail(os.Stderr, err)
 		return 1
 	}
-	ui.Done(os.Stdout, fmt.Sprintf("%s removed from %s", rep.Harness, scope.Label()))
+	ui.Done(os.Stdout, fmt.Sprintf("%s removed from %s", rep.Harness, scopeLabel(rep.Scope)))
 	if len(rep.Parked) > 0 {
 		fmt.Println("  " + ui.Desc.Render("restored ") + strings.Join(rep.Parked, ", "))
 	}
@@ -277,7 +290,7 @@ func update(args []string) int {
 	state := harness.LoadState()
 	for _, sc := range state.Order() {
 		if a, ok := state.Active(sc); ok && a.Harness == h.Name {
-			fmt.Println(ui.Note.Render("  applied at " + sc.Label() +
+			fmt.Println(ui.Note.Render("  applied at " + scopeLabel(sc) +
 				" — re-run `use` if its hooks changed"))
 		}
 	}
@@ -350,7 +363,7 @@ func sync(args []string) int {
 		ui.Fail(os.Stderr, err)
 		return 1
 	}
-	ui.Done(os.Stdout, fmt.Sprintf("%s applied at %s", rep.Harness, rep.Scope.Label()))
+	ui.Done(os.Stdout, fmt.Sprintf("%s applied at %s", rep.Harness, scopeLabel(rep.Scope)))
 	fmt.Println("  " + ui.Desc.Render("pinned   ") + rep.Pin.Source + refSuffix(rep.Pin.Ref))
 	fmt.Println("  " + ui.Desc.Render("harness  ") + rep.Action)
 	if len(rep.Linked) > 0 {
@@ -375,7 +388,17 @@ func settingsFor(scope harness.Scope) string {
 	if root, ok := scope.IsProject(); ok {
 		return claude.ProjectSettingsPath(root)
 	}
-	return claude.SettingsPath()
+	dir, _ := scope.Resolve().IsUser()
+	return claude.SettingsIn(dir)
+}
+
+// scopeLabel is a scope as a person would say it, with an agent directory
+// abbreviated the way dir shows it.
+func scopeLabel(sc harness.Scope) string {
+	if dir, ok := sc.IsUser(); ok {
+		return "user " + shortPath(dir)
+	}
+	return sc.Label()
 }
 
 // shortPath abbreviates a home-relative path, which is most of them.
