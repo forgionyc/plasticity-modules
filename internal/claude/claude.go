@@ -8,17 +8,18 @@
 package claude
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/esmarkowski/plasticity-modules/internal/plst"
 )
 
-// Dir is the agent's configuration directory.
-//
-// CLAUDE_CONFIG_DIR is the agent's own variable and wins, so pointing a whole
-// session somewhere else works without plst needing an opinion about it.
+// Dir is the agent's configuration directory: plst's claude_dir setting, else ~/.claude.
 func Dir() string {
-	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
-		return d
+	if d := plst.LoadConfig().ClaudeDir; d != "" {
+		return resolve(d)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -27,8 +28,58 @@ func Dir() string {
 	return filepath.Join(home, ".claude")
 }
 
+// Configured reports whether claude_dir is set, as opposed to Dir falling back to the default.
+func Configured() bool { return plst.LoadConfig().ClaudeDir != "" }
+
+// SetDir points plst at an agent directory as typed on a command line: ~ is home,
+// and anything else relative is relative to here. It stores and returns the absolute path.
+func SetDir(arg string) (string, error) {
+	dir, err := filepath.Abs(expandHome(arg))
+	if err != nil {
+		return "", err
+	}
+	if fi, err := os.Stat(dir); err == nil && !fi.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", dir)
+	}
+	return dir, plst.SetClaudeDir(dir)
+}
+
+// ResetDir removes the setting, so Dir falls back to the default.
+func ResetDir() error { return plst.SetClaudeDir("") }
+
+// EnvOverride is CLAUDE_CONFIG_DIR when it is set to somewhere other than Dir: what an
+// agent started from this shell would read instead of what plst is configuring.
+func EnvOverride() (string, bool) {
+	e := os.Getenv("CLAUDE_CONFIG_DIR")
+	if e == "" || filepath.Clean(expandHome(e)) == filepath.Clean(Dir()) {
+		return "", false
+	}
+	return e, true
+}
+
+func expandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[1:])
+		}
+	}
+	return p
+}
+
+// resolve makes a configured path absolute, since a relative one would name a different place from every shell.
+func resolve(p string) string {
+	p = expandHome(p)
+	if !filepath.IsAbs(p) {
+		return filepath.Join(plst.Home(), p)
+	}
+	return p
+}
+
 // SettingsPath is the user-scope settings file, where hooks are registered.
-func SettingsPath() string { return filepath.Join(Dir(), "settings.json") }
+func SettingsPath() string { return SettingsIn(Dir()) }
+
+// SettingsIn is the settings file of one agent directory.
+func SettingsIn(dir string) string { return filepath.Join(dir, "settings.json") }
 
 // ProjectDir is a repository's own configuration directory.
 func ProjectDir(root string) string { return filepath.Join(root, ".claude") }

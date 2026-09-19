@@ -5,22 +5,48 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/esmarkowski/plasticity-modules/internal/claude"
 	"github.com/esmarkowski/plasticity-modules/internal/plst"
 )
 
 // Scope is where a harness is applied.
 //
-// Two, because the agent reads two: its own configuration directory, and a
+// Two kinds, because the agent reads two: its own configuration directory, and a
 // repository's. They are tracked separately so a project can run one harness
 // while everything else runs another.
 type Scope string
 
 const (
-	// User is the agent's own configuration directory.
+	// User is the agent's own configuration directory, whichever one plst is
+	// pointed at right now. Resolve turns it into that directory's own scope.
 	User Scope = "user"
 )
+
+// UserScope names one agent directory's scope. There is one per directory, as
+// there is one per repository: switching directories means two agents to
+// configure, and a harness applied to one is not applied to the other.
+func UserScope(dir string) Scope { return Scope("user:" + dir) }
+
+// IsUser reports whether a scope is one agent directory's, and which.
+func (s Scope) IsUser() (string, bool) {
+	const p = "user:"
+	if len(s) > len(p) && string(s[:len(p)]) == p {
+		return string(s[len(p):]), true
+	}
+	return "", false
+}
+
+// Resolve turns User into the scope of the directory plst is pointed at now; any
+// other scope is already itself.
+func (s Scope) Resolve() Scope {
+	if s == User {
+		return UserScope(claude.Dir())
+	}
+	return s
+}
 
 // ProjectScope names a repository's scope by its root, since there are as many
 // project scopes as there are repositories.
@@ -39,6 +65,9 @@ func (s Scope) IsProject() (string, bool) {
 func (s Scope) Label() string {
 	if root, ok := s.IsProject(); ok {
 		return "project " + root
+	}
+	if dir, ok := s.IsUser(); ok {
+		return "user " + dir
 	}
 	return "user"
 }
@@ -93,6 +122,18 @@ func LoadState() State {
 	if s.Scopes == nil {
 		s.Scopes = map[Scope]Applied{}
 	}
+	// Applied before user scope was kept per directory: it belongs to the
+	// directory it was applied to, and dropping it would strand its links.
+	if a, ok := s.Scopes[User]; ok {
+		delete(s.Scopes, User)
+		dir := claude.Dir()
+		if a.Settings != "" {
+			dir = filepath.Dir(a.Settings)
+		}
+		if _, taken := s.Scopes[UserScope(dir)]; !taken {
+			s.Scopes[UserScope(dir)] = a
+		}
+	}
 	return s
 }
 
@@ -110,7 +151,7 @@ func (s State) Save() error {
 
 // Active is the harness applied in a scope.
 func (s State) Active(scope Scope) (Applied, bool) {
-	a, ok := s.Scopes[scope]
+	a, ok := s.Scopes[scope.Resolve()]
 	return a, ok
 }
 
@@ -122,12 +163,32 @@ func (s State) Order() []Scope {
 		out = append(out, k)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if (out[i] == User) != (out[j] == User) {
-			return out[i] == User
+		_, iu := out[i].IsUser()
+		_, ju := out[j].IsUser()
+		if iu != ju {
+			return iu
 		}
 		return out[i] < out[j]
 	})
 	return out
+}
+
+// elsewhere names the other agent directories that do have a harness, for an
+// error that would otherwise leave someone wondering where theirs went.
+func (s State) elsewhere(scope Scope) string {
+	if _, ok := scope.IsUser(); !ok {
+		return ""
+	}
+	var parts []string
+	for _, sc := range s.Order() {
+		if dir, ok := sc.IsUser(); ok && sc != scope {
+			parts = append(parts, s.Scopes[sc].Harness+" is applied at "+dir)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " — " + strings.Join(parts, "; ")
 }
 
 // parkDir is where a displaced file goes: under plst's own state, stamped, so two
